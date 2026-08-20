@@ -36,10 +36,18 @@ enum PaymentStatus {
   REFUNDED
 }
 
+// Outbox / event status enum
+enum EventStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+  DEAD_LETTER
+}
+
 model User {
   id           String    @id @default(uuid())
   tenantId     String
-  email        String    @unique
+  email        String
   passwordHash String
   fullName     String?
   phone        String?
@@ -51,6 +59,8 @@ model User {
   orders       Order[]   @relation("resident_orders")
   providerEmp  ProviderEmployee?
   auditLogs    AuditLog[]
+
+  @@unique([tenantId, email])
 }
 
 model UserRole {
@@ -133,7 +143,6 @@ model Order {
 
   items         OrderItem[]
   jobs          Job[]
-  events        Event[]      @relation("order_events")
   payment       Payment?
 
   @@index([tenantId, status])
@@ -165,20 +174,23 @@ model Job {
 }
 
 model Event {
-  id             String   @id @default(uuid())
+  id             String      @id @default(uuid())
   eventName      String
   aggregateType  String
   aggregateId    String
   tenantId       String
   payload        Json
   correlationId  String?
-  idempotencyKey String?
-  createdAt      DateTime @default(now())
+  idempotencyKey String?     @db.VarChar(255)
+  status         EventStatus @default(PENDING)
+  attempts       Int         @default(0)
+  lastError      String?
+  nextRetryAt    DateTime?
+  createdAt      DateTime    @default(now())
 
-  // optional relation to order for queries
-  order          Order?   @relation("order_events", fields: [aggregateId], references: [id])
-
+  // Polymorphic aggregate — do not define strict FK relation here
   @@index([tenantId, aggregateType, aggregateId])
+  @@unique([idempotencyKey], map: "idx_event_idempotency_key")
 }
 
 model AuditLog {
