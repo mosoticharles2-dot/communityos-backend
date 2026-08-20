@@ -69,6 +69,7 @@ export async function supabaseAuth(req, res, next) {
   }
 }
 
+import servicesRoutes from './routes/services.routes.js';
 // Mount API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/orders', ordersRoutes);
