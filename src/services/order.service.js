@@ -1,25 +1,22 @@
 import { getDb } from '../db/connection.js';
 import { v4 as uuidv4 } from 'uuid';
+import { publishEvent } from '../utils/pubsub.js';
 
 export const OrderService = {
   /**
    * Create an order and persist an ORDER_CREATED event.
-   * items: [{ serviceId, quantity }]
    */
   async createOrder({ tenantId, residentId, communityId, providerId, items = [], idempotencyKey = null, metadata = {} }) {
     const prisma = getDb();
 
-    // Idempotency: if an event with this idempotencyKey exists, return the related order
     if (idempotencyKey) {
       const existingEvent = await prisma.event.findFirst({ where: { idempotencyKey } });
       if (existingEvent) {
-        // Try to return linked order
         const existingOrder = await prisma.order.findUnique({ where: { id: existingEvent.aggregateId } }).catch(() => null);
         if (existingOrder) return existingOrder;
       }
     }
 
-    // compute totals by fetching unitPrice
     const serviceIds = items.map(i => i.serviceId);
     const services = await prisma.service.findMany({ where: { id: { in: serviceIds } } });
     const serviceMap = Object.fromEntries(services.map(s => [s.id, s]));
@@ -40,7 +37,6 @@ export const OrderService = {
       };
     });
 
-    // Transaction: create order, items, event
     const orderId = uuidv4();
     const correlationId = uuidv4();
 
@@ -77,6 +73,13 @@ export const OrderService = {
       return order;
     });
 
+    // Emit real-time notifications via PubSub (Socket.IO) so providers can get immediate updates
+    try {
+      publishEvent('ORDER_CREATED', { orderId: created.id, tenantId: created.tenantId, providerId, payload: { total, items: orderItemsData } });
+    } catch (err) {
+      console.error('Failed to publish ORDER_CREATED event:', err?.message || err);
+    }
+
     return created;
   },
 
@@ -92,11 +95,9 @@ export const OrderService = {
   async acceptOrder({ providerId, orderId, userId }) {
     const prisma = getDb();
 
-    // Verify provider employee mapping
     const emp = await prisma.providerEmployee.findFirst({ where: { providerId, userId } });
     if (!emp) throw new Error('User not authorized for this provider');
 
-    // Update order status and create event
     const correlationId = uuidv4();
     const updated = await prisma.$transaction(async (tx) => {
       const order = await tx.order.update({ where: { id: orderId }, data: { status: 'PROVIDER_ACCEPTED', providerId } });
@@ -114,6 +115,13 @@ export const OrderService = {
 
       return order;
     });
+
+    // Publish realtime event
+    try {
+      publishEvent('ORDER_ACCEPTED', { orderId: updated.id, tenantId: updated.tenantId, providerId, payload: { userId } });
+    } catch (err) {
+      console.error('Failed to publish ORDER_ACCEPTED event:', err?.message || err);
+    }
 
     return updated;
   },

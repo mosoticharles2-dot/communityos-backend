@@ -6,10 +6,14 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { config } from './config/env.js';
 import { initializeSupabase, getUserFromToken } from './config/supabase.js';
-import { initializeRedis } from './config/redis.js';
 import { initializeDb, closeDb } from './db/connection.js';
+import authRoutes from './routes/auth.routes.js';
+import ordersRoutes from './routes/orders.routes.js';
+import providerRoutes from './routes/provider.routes.js';
+import { AuthService } from './services/auth.service.js';
+import { setPubSub } from './utils/pubsub.js';
 
-// Initialize services
+// Initialize Supabase client (server)
 initializeSupabase();
 
 const app = express();
@@ -22,6 +26,9 @@ const io = new SocketIOServer(server, {
   },
 });
 
+// Make io available to services via pubsub
+setPubSub(io);
+
 app.use(helmet());
 app.use(cors({ origin: config.FRONTEND_URL, credentials: true }));
 app.use(express.json());
@@ -32,46 +39,61 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', env: config.NODE_ENV });
 });
 
-// Simple auth middleware using Supabase Auth
+// Supabase-based auth middleware that also links user to local DB
 export async function supabaseAuth(req, res, next) {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : null;
-  if (!token) return res.status(401).json({ success: false, error: { message: 'No token provided' } });
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : null;
+    if (!token) return res.status(401).json({ success: false, error: { message: 'No token provided' } });
 
-  const user = await getUserFromToken(token);
-  if (!user) return res.status(401).json({ success: false, error: { message: 'Invalid token' } });
+    const user = await getUserFromToken(token);
+    if (!user) return res.status(401).json({ success: false, error: { message: 'Invalid token' } });
 
-  // attach user to request (supabase user object)
-  req.user = {
-    id: user.id,
-    email: user.email,
-    phone: user.phone,
-    role: user?.role || null,
-  };
-  next();
+    // Ensure DB is initialized and link user to local users/roles
+    const tenantId = user?.user_metadata?.tenantId || null;
+    try {
+      await initializeDb();
+      // Link user in background but wait so req.user has local id
+      const localUser = await AuthService.linkUser(user, tenantId, []);
+      req.user = { ...user, localUser };
+    } catch (err) {
+      console.error('Error linking user:', err?.message || err);
+      // proceed with supabase user even if linking fails
+      req.user = { ...user };
+    }
+
+    next();
+  } catch (err) {
+    console.error('supabaseAuth error', err?.message || err);
+    return res.status(500).json({ success: false, error: { message: 'Authentication failed' } });
+  }
 }
 
-// Mount placeholder routes
-app.get('/api/me', supabaseAuth, (req, res) => {
-  res.json({ success: true, user: req.user });
-});
+// Mount API routes
+app.use('/api/auth', authRoutes);
+app.use('/api/orders', ordersRoutes);
+app.use('/api/providers', providerRoutes);
 
-// Socket.IO auth
+// Socket.IO auth and connection handling
 io.use(async (socket, next) => {
-  const token = socket.handshake.auth?.token;
-  if (!token) return next(new Error('Authentication error'));
-  const user = await getUserFromToken(token);
-  if (!user) return next(new Error('Authentication error'));
-  socket.user = user;
-  next();
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('Authentication error'));
+    const user = await getUserFromToken(token);
+    if (!user) return next(new Error('Authentication error'));
+    socket.user = user;
+    next();
+  } catch (err) {
+    next(new Error('Authentication error'));
+  }
 });
 
 io.on('connection', (socket) => {
   console.log('Socket connected', socket.id, 'user', socket.user?.id);
-  // Join rooms per tenant or user as needed
-  socket.on('join:order', (orderId) => {
-    socket.join(`order:${orderId}`);
-  });
+
+  // join rooms as needed
+  socket.on('join:order', (orderId) => socket.join(`order:${orderId}`));
+  socket.on('join:provider', (providerId) => socket.join(`provider:${providerId}`));
 
   socket.on('disconnect', () => {
     // cleanup
@@ -81,9 +103,8 @@ io.on('connection', (socket) => {
 // Start function
 async function start() {
   try {
-    // Initialize DB and Redis
+    // Initialize DB
     initializeDb();
-    await initializeRedis();
 
     const port = config.PORT || 3000;
     server.listen(port, () => console.log(`Server listening on port ${port}`));
