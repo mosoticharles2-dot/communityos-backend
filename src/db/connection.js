@@ -1,32 +1,26 @@
-import pkg from 'postgres';
-const sql = pkg;
+import { PrismaClient } from '@prisma/client';
 
-let db = null;
+let prisma = null;
 
-export async function initializeDatabase() {
-  if (db) return db;
-
-  db = sql({
-    host: process.env.DB_HOST || 'localhost',
-    port: process.env.DB_PORT || 5432,
-    database: process.env.DB_NAME || 'communityos',
-    username: process.env.DB_USER || 'postgres',
-    password: process.env.DB_PASSWORD || 'postgres',
-  });
-
-  return db;
+export function initializeDb() {
+  if (prisma) return prisma;
+  prisma = new PrismaClient();
+  return prisma;
 }
 
-export function getDatabase() {
-  if (!db) {
-    throw new Error('Database not initialized. Call initializeDatabase() first.');
-  }
-  return db;
+export function getDb() {
+  if (!prisma) throw new Error('Database not initialized. Call initializeDb() first.');
+  return prisma;
 }
 
-export async function closeDatabase() {
-  if (db) {
-    await db.end();
-    db = null;
+export async function closeDb() {
+  if (prisma) {
+    try {
+      await prisma.$disconnect();
+    } catch (err) {
+      console.warn('Error while disconnecting Prisma:', err?.message || err);
+    } finally {
+      prisma = null;
+    }
   }
 }

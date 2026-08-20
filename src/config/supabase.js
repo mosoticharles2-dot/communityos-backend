@@ -1,38 +1,39 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from './env.js';
 
-let supabaseInstance = null;
+let supabase = null;
 
 export function initializeSupabase() {
-  if (supabaseInstance) return supabaseInstance;
+  if (supabase) return supabase;
 
-  supabaseInstance = createClient(
-    config.SUPABASE_URL,
-    config.SUPABASE_KEY
-  );
+  if (!config.SUPABASE_URL || !config.SUPABASE_KEY) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE_KEY');
+  }
 
-  return supabaseInstance;
+  supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
+    // use service_role key on server for admin operations
+    auth: {
+      persistSession: false,
+    },
+  });
+
+  return supabase;
 }
 
 export function getSupabase() {
-  if (!supabaseInstance) {
-    throw new Error('Supabase not initialized. Call initializeSupabase() first.');
-  }
-  return supabaseInstance;
+  if (!supabase) throw new Error('Supabase not initialized. Call initializeSupabase() first.');
+  return supabase;
 }
 
-export async function testConnection() {
+export async function getUserFromToken(accessToken) {
+  // Uses the admin client to get user by access token
+  const client = supabase || initializeSupabase();
   try {
-    const supabase = getSupabase();
-    const { data, error } = await supabase
-      .from('users')
-      .select('count', { count: 'exact' })
-      .limit(0);
-    
+    const { data, error } = await client.auth.getUser(accessToken);
     if (error) throw error;
-    return true;
-  } catch (error) {
-    console.error('Supabase connection test failed:', error.message);
-    return false;
+    return data?.user || null;
+  } catch (err) {
+    console.error('getUserFromToken error', err?.message || err);
+    return null;
   }
 }
