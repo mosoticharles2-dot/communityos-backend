@@ -11,6 +11,10 @@
     "prisma:generate": "prisma generate",
     "seed": "node src/db/seed.js",
     "test": "echo \"Error: no test specified\" && exit 1"
+    "lint": "eslint . --ext .js"
+"format": "prettier --write ."
+"ci": "npm run lint && npx prisma generate"
+"test": "jest"
   },
   "keywords": [
     "community",
