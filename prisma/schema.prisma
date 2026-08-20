@@ -1,0 +1,209 @@
+// Prisma schema for CommunityOS (water-delivery MVP)
+// Run with: npx prisma generate
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums
+enum RoleName {
+  RESIDENT
+  MANAGER
+  PROVIDER_REP
+  WORKER
+  PLATFORM_ADMIN
+}
+
+enum OrderStatus {
+  CREATED
+  PROVIDER_ACCEPTED
+  WORKER_ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+model User {
+  id           String    @id @default(uuid())
+  tenantId     String
+  email        String    @unique
+  passwordHash String
+  fullName     String?
+  phone        String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  roles        UserRole[]
+  orders       Order[]   @relation("resident_orders")
+  providerEmp  ProviderEmployee?
+  auditLogs    AuditLog[]
+}
+
+model UserRole {
+  id          String   @id @default(uuid())
+  user        User     @relation(fields: [userId], references: [id])
+  userId      String
+  tenantId    String
+  role        RoleName
+  resourceId  String?  // optional, e.g., community_id
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId, userId])
+}
+
+model Community {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  address   String?
+  meta      Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relations
+  orders    Order[]
+}
+
+model Provider {
+  id          String   @id @default(uuid())
+  tenantId    String
+  companyName String
+  contact     String?
+  verificationStatus String? // manual enum later
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  services     Service[]
+  employees    ProviderEmployee[]
+}
+
+model ProviderEmployee {
+  id         String @id @default(uuid())
+  provider   Provider @relation(fields: [providerId], references: [id])
+  providerId String
+  user       User?    @relation(fields: [userId], references: [id])
+  userId     String?
+  role       String
+  createdAt  DateTime @default(now())
+
+  @@index([providerId])
+}
+
+model Service {
+  id          String  @id @default(uuid())
+  provider    Provider @relation(fields: [providerId], references: [id])
+  providerId  String
+  tenantId    String
+  name        String
+  description String?
+  unitPrice   Float
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orderItems OrderItem[]
+}
+
+model Order {
+  id            String       @id @default(uuid())
+  tenantId      String
+  communityId   String?
+  resident      User         @relation("resident_orders", fields: [residentId], references: [id])
+  residentId    String
+  provider      Provider?    @relation(fields: [providerId], references: [id])
+  providerId    String?
+  status        OrderStatus  @default(CREATED)
+  total         Float        @default(0)
+  metadata      Json?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  items         OrderItem[]
+  jobs          Job[]
+  events        Event[]      @relation("order_events")
+  payment       Payment?
+
+  @@index([tenantId, status])
+}
+
+model OrderItem {
+  id         String  @id @default(uuid())
+  order      Order   @relation(fields: [orderId], references: [id])
+  orderId    String
+  service    Service @relation(fields: [serviceId], references: [id])
+  serviceId  String
+  quantity   Int
+  unitPrice  Float
+  total      Float
+}
+
+model Job {
+  id         String   @id @default(uuid())
+  order      Order    @relation(fields: [orderId], references: [id])
+  orderId    String
+  workerId   String?  // references User.id for worker
+  scheduledAt DateTime?
+  startedAt  DateTime?
+  completedAt DateTime?
+  status     OrderStatus @default(CREATED)
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Event {
+  id             String   @id @default(uuid())
+  eventName      String
+  aggregateType  String
+  aggregateId    String
+  tenantId       String
+  payload        Json
+  correlationId  String?
+  idempotencyKey String?
+  createdAt      DateTime @default(now())
+
+  // optional relation to order for queries
+  order          Order?   @relation("order_events", fields: [aggregateId], references: [id])
+
+  @@index([tenantId, aggregateType, aggregateId])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  user       User?    @relation(fields: [userId], references: [id])
+  userId     String?
+  action     String
+  entityType String
+  entityId   String
+  changes    Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+}
+
+model Payment {
+  id           String        @id @default(uuid())
+  order        Order         @relation(fields: [orderId], references: [id])
+  orderId      String
+  tenantId     String
+  providerRef  String?       // external provider reference / transaction id
+  status       PaymentStatus @default(PENDING)
+  amount       Float
+  metadata     Json?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
